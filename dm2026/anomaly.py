@@ -28,14 +28,17 @@ class NormalMemory:
             rng = np.random.default_rng(SEED)
             bank = bank[rng.choice(len(bank), 8192, replace=False)]
         self.index = NearestNeighbors(n_neighbors=5, algorithm="auto").fit(bank)
+        self.radii = self.index.kneighbors()[0].mean(axis=1)
+        self.radius_floor = max(float(np.quantile(self.radii, 0.10)), 1e-8)
 
     def distances(self, bags):
         queries = bags.reshape(-1, self.dimension)
-        distances = self.index.kneighbors(queries)[0].mean(axis=1)
-        return distances.reshape(-1, self.bag_size)
+        distances, neighbors = self.index.kneighbors(queries)
+        raw = distances.mean(axis=1)
+        local = np.maximum(self.radii[neighbors].mean(axis=1), self.radius_floor)
+        return raw.reshape(-1, self.bag_size), (raw / np.sqrt(local)).reshape(-1, self.bag_size)
 
-    def score(self, bags):
-        distances = self.distances(bags)
+    def aggregate(self, distances):
         count = max(1, int(np.ceil(self.bag_size * 0.05)))
         return np.sort(distances, axis=1)[:, -count:].mean(axis=1)
 
@@ -59,7 +62,14 @@ def calibrated_frame(ids, y, calibration, scores):
 
 def shared_scores(normal, test, fit, cal):
     model = NormalMemory(normal[fit])
-    return model, model.score(normal[cal]), model.score(test)
+    calibration_distances = model.distances(normal[cal])
+    test_distances = model.distances(test)
+    scores = {
+        name: (model.aggregate(calibration), model.aggregate(evaluation))
+        for name, calibration, evaluation in zip(
+            ("shared_memory", "density_memory"), calibration_distances, test_distances)
+    }
+    return scores, test_distances[0]
 
 
 def image_heatmaps(archive, folder, names, labels, distances, score):
@@ -90,13 +100,17 @@ def image_runs(archive, vision, folder, specialized):
         abnormal = np.flatnonzero(np.char.startswith(names, f"{category}/train/bad/"))
         test = np.flatnonzero(np.char.startswith(names, f"{category}/test/"))
         fit, cal = normal_split(len(normal))
-        model, calibration, score = shared_scores(patches[normal], patches[test], fit, cal)
+        memory, distances = shared_scores(patches[normal], patches[test], fit, cal)
         labels = read_labels(archive, "image_anomaly_labels")
         ids = names[test]
         y = np.array([int(labels[name]["label"] == "bad") for name in ids])
-        results[category] = calibrated_frame(ids, y, calibration, score)
+        results[category] = {
+            name: calibrated_frame(ids, y, calibration, score)
+            for name, (calibration, score) in memory.items()
+        }
         if not specialized:
             continue
+        calibration, score = memory["shared_memory"]
         target = folder / category
         target.mkdir(exist_ok=True)
         training = np.r_[normal[fit], abnormal]
@@ -116,11 +130,12 @@ def image_runs(archive, vision, folder, specialized):
                       + scale(svm_cal[scale_count:], svm_reference)) / 2
         hybrid_score = (scale(score, patch_reference) + scale(svm_score, svm_reference)) / 2
         binary_outputs(target, {
-            "patch_memory": results[category],
+            "patch_memory": results[category]["shared_memory"],
+            "density_memory": results[category]["density_memory"],
             "global_svm": calibrated_frame(ids, y, svm_cal, svm_score),
             "fusion": calibrated_frame(ids, y, hybrid_cal, hybrid_score),
         }, category)
-        image_heatmaps(archive, target, ids, y, model.distances(patches[test]), score)
+        image_heatmaps(archive, target, ids, y, distances, score)
         write_json(target / "protocol.json", dict(
             normal_fit=len(fit), normal_calibration=len(cal),
             anomaly_fit=len(abnormal), fusion_scaling=scale_count,
@@ -136,16 +151,20 @@ def thyroid_run(archive, folder, specialized):
     scaler = RobustScaler().fit(normal[fit])
     normal = scaler.transform(normal)
     test = scaler.transform(test_frame.drop(columns="label").to_numpy())
-    _, calibration, score = shared_scores(normal[:, None, :], test[:, None, :], fit, cal)
+    memory, _ = shared_scores(normal[:, None, :], test[:, None, :], fit, cal)
     y, ids = test_frame["label"].astype(int), test_frame.index + 1
-    shared = calibrated_frame(ids, y, calibration, score)
+    shared = {
+        name: calibrated_frame(ids, y, calibration, score)
+        for name, (calibration, score) in memory.items()
+    }
     if specialized:
         mixtures = [GaussianMixture(n_components=k, n_init=3, reg_covar=1e-4,
                                     random_state=SEED).fit(normal[fit]) for k in (1, 2, 4, 8)]
         model = min(mixtures, key=lambda mixture: mixture.bic(normal[fit]))
         forest = IsolationForest(n_estimators=300, random_state=SEED).fit(normal[fit])
         binary_outputs(folder, {
-            "normal_memory": shared,
+            "normal_memory": shared["shared_memory"],
+            "density_memory": shared["density_memory"],
             "gaussian_mixture": calibrated_frame(ids, y, -model.score_samples(normal[cal]),
                                                  -model.score_samples(test)),
             "isolation_forest": calibrated_frame(ids, y, -forest.score_samples(normal[cal]),
@@ -159,20 +178,27 @@ def thyroid_run(archive, folder, specialized):
 
 
 def cross_modal(folder, domains):
-    for domain, frame in domains.items():
+    for domain, frames in domains.items():
         target = folder / domain
         target.mkdir(exist_ok=True)
-        binary_outputs(target, {"shared_memory": frame}, domain)
-    pooled = pd.concat([frame.assign(domain=domain) for domain, frame in domains.items()],
-                       ignore_index=True)
-    pooled = pooled.rename(columns={"score": "raw_score"}).assign(score=1 - pooled["p_normal"])
-    binary_outputs(folder, {"pooled_calibrated": pooled}, "Cross-modal anomaly detection")
+        binary_outputs(target, frames, domain)
+    pooled = {}
+    for name, key in [("pooled_calibrated", "shared_memory"), ("pooled_density", "density_memory")]:
+        frame = pd.concat([frames[key].assign(domain=domain) for domain, frames in domains.items()],
+                          ignore_index=True)
+        pooled[name] = frame.rename(columns={"score": "raw_score"}).assign(
+            score=1 - frame["p_normal"])
+    binary_outputs(folder, pooled, "Cross-modal anomaly detection")
     summary = pd.concat([
         pd.read_csv(folder / domain / "metrics.csv").assign(domain=domain)
         for domain in domains
     ], ignore_index=True)
     summary.to_csv(folder / "domain_metrics.csv", index=False)
+    macro = summary.groupby("model")[["auroc", "average_precision"]].mean()
     write_json(folder / "protocol.json", dict(
         nominal_fpr=ALPHA, normal_calibration_fraction=0.25, neighbors=5,
-        macro_auroc=summary["auroc"].mean(),
-        macro_average_precision=summary["average_precision"].mean()))
+        density_radius_floor_quantile=0.10,
+        macro_auroc=macro.loc["shared_memory", "auroc"],
+        macro_average_precision=macro.loc["shared_memory", "average_precision"],
+        density_macro_auroc=macro.loc["density_memory", "auroc"],
+        density_macro_average_precision=macro.loc["density_memory", "average_precision"]))

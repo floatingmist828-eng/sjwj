@@ -45,6 +45,15 @@ def summary_features(x):
     ], axis=1)
 
 
+def cyclical_features(history, dates, columns, training_rows, compact):
+    wind = np.deg2rad(history[:, :, columns.get_loc("wd (deg)")])
+    direction = np.stack([np.sin(wind), np.cos(wind)], axis=-1)
+    direction = direction.reshape(len(history), -1)
+    direction = StandardScaler().fit(direction[training_rows]).transform(direction)
+    phase = 2 * np.pi * (dates.hour.to_numpy() * 60 + dates.minute.to_numpy()) / 1440
+    return np.column_stack([compact, direction, np.sin(phase), np.cos(phase)])
+
+
 def metrics(y, pred):
     return dict(mae=mean_absolute_error(y, pred),
                 rmse=np.sqrt(mean_squared_error(y, pred)), r2=r2_score(y, pred),
@@ -60,14 +69,21 @@ def run(source, folder):
     delta = y - baseline
     flat = x.reshape(len(x), -1)
     compact = summary_features(x)
-    predicted = {"persistence": baseline}
-    for name, model, features in [
-        ("ridge_delta", Ridge(alpha=10), flat),
-        ("boosted_delta", HistGradientBoostingRegressor(
-            max_iter=220, learning_rate=0.055, max_leaf_nodes=23,
-            min_samples_leaf=25, l2_regularization=2, early_stopping=False,
-            random_state=2026), compact),
+    # Keep raw direction in the baseline; the new model uses its circular encoding.
+    wind_column = data.columns.get_loc("wd (deg)")
+    other_features = np.arange(compact.shape[1]) % history.shape[-1] != wind_column
+    cyclic = cyclical_features(history, dates, data.columns, train, compact[:, other_features])
+    ridge = Ridge(alpha=10).fit(flat[train], delta[train])
+    predicted = {"persistence": baseline, "ridge_delta": baseline + ridge.predict(flat)}
+    for name, features, loss in [
+        ("boosted_delta", compact, "squared_error"),
+        ("cyclic_boosted_delta", cyclic, "squared_error"),
+        ("cyclic_median_delta", cyclic, "absolute_error"),
     ]:
+        model = HistGradientBoostingRegressor(
+            loss=loss, max_iter=220, learning_rate=0.055, max_leaf_nodes=23,
+            min_samples_leaf=25, l2_regularization=2, early_stopping=False,
+            random_state=2026)
         model.fit(features[train], delta[train])
         predicted[name] = baseline + model.predict(features)
     predicted["blend_delta"] = (predicted["ridge_delta"] + predicted["boosted_delta"]) / 2
@@ -87,7 +103,7 @@ def run(source, folder):
     test_frame["predicted_change"] = predicted[best][test] - baseline[test]
     test_frame["residual"] = test_frame[best] - test_frame["actual"]
     test_frame.to_csv(folder / "test_predictions.csv", index=False)
-    window = test_frame.iloc[:288]
+    window = test_frame[test_frame["date"] < test_frame["date"].iloc[0] + pd.Timedelta(days=2)]
     fig, axes = plt.subplots(2, 1, figsize=(11, 6), layout="constrained")
     axes[0].plot(window["date"], window["actual"], label="Observed")
     axes[0].plot(window["date"], window[best], label=best, alpha=0.8)
