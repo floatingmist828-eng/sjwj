@@ -1,0 +1,7 @@
+DM_2026_Dataset/
+*.doc
+.codex/
+.cache/
+outputs/
+__pycache__/
+.venv/
