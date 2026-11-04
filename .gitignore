@@ -1,5 +1,8 @@
-DM_2026_Dataset/
+/DM_2026_Dataset/
+/local/
 *.doc
+*.docx
+*.pdf
 .codex/
 .cache/
 outputs/

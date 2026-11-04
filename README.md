@@ -1,43 +1,103 @@
-# 数据挖掘导论 2026 大作业
+<div align="center">
 
-四项必做任务与拓展一。使用课程原始数据，ZIP 可直接读取。
+<h1>🧭 Strata：图像聚类、气象预测与跨模态异常检测</h1>
+<p><strong>数据挖掘导论 2026 · 四项必做 · 拓展一</strong></p>
 
-## 环境与运行
+<p>
+  <a href="#quick-start"><img src="https://img.shields.io/badge/Python-3.11-41628E?style=flat-square&amp;logo=python&amp;logoColor=white" alt="Python 3.11"></a>
+  <a href="#tasks"><img src="https://img.shields.io/badge/Experiments-4%20%2B%201-176E66?style=flat-square" alt="四项必做与一项拓展"></a>
+  <a href="#outputs"><img src="https://img.shields.io/badge/Outputs-CSV%20%7C%20JSON%20%7C%20PNG-6E568C?style=flat-square" alt="CSV、JSON 和 PNG 输出"></a>
+</p>
 
-建议使用 Python 3.11。在仓库根目录安装依赖：
+<p><a href="#tasks">实验与结果</a> · <a href="#quick-start">快速开始</a> · <a href="#layout">仓库结构</a> · <a href="#outputs">结果文件</a></p>
+
+</div>
+
+<a id="tasks"></a>
+
+## 📊 实验与结果
+
+| 作业任务 | 命令 | 实现 | 原始数据实测 |
+| :--- | :--- | :--- | :--- |
+| **① 图像无监督聚类** | `cluster` | 冻结 ResNet-50 多层特征，比较 K-means、Ward 和谱聚类 | 600 张图、6 类。四组实验 ARI / NMI / 匹配准确率均为 **1.000** |
+| **② 图像异常检测** | `image` | 正常图块近邻、密度修正、监督 SVM 和分数融合 | 榛果图块近邻 AUROC / AP **1.000 / 1.000**。拉链密度修正 **0.990 / 0.983** |
+| **③ CO₂ 时间序列预测** | `weather` | 用连续 12 点的全部 21 项指标预测下一时刻浓度，比较持久性、Ridge 和梯度提升 | 验证集选出的周期中位数模型测试 MAE **1.854 ppm**，持久性基线 **1.970 ppm** |
+| **④ 甲状腺无监督疾病判断** | `thyroid` | 仅用正常数据拟合稳健缩放、近邻记忆、高斯混合和隔离森林 | 隔离森林 AUROC **0.981**。原始正常记忆 AP **0.814** |
+| **✦ 拓展一 · 跨模态异常检测** | `cross-modal` | 图像与表格按域建正常样本库，共用 5 近邻评分、聚合及校准规则 | 密度修正三域等权宏 AUROC / AP **0.988 / 0.920** |
+
+<p align="center">
+  <img src="assets/cluster-preview.png" width="960" alt="六类图像在同一 PCA 投影上的四种聚类分配">
+  <br><sub>六类图像的共同 PCA 投影。颜色和形状使用评估阶段的簇匹配结果。</sub>
+</p>
+
+聚类类别只参与评价。天气按目标时间作 70% / 15% / 15% 划分，标准化只拟合训练数据，以验证 MAE 选模。异常检测以独立正常样本校准阈值，测试标签只用于评价。跨模态同时输出逐域、等权宏平均及池化结果。
+
+<a id="quick-start"></a>
+
+## 🚀 快速开始
+
+**1. 安装依赖。** 使用 Python 3.11，在仓库根目录执行以下命令。
 
 ```bash
 python -m pip install -r requirements.txt
 python -m pip install torch==2.3.1 torchvision==0.18.1
 ```
 
-将课程数据中的 `Cluster.zip`、`Image_Anomaly_Detection.zip`、`weather.csv` 和 `thyroid.zip` 放入 `DM_2026_Dataset/`，也可以用 `--data` 指定目录。
+**2. 放置数据。** 从课程共享获取以下四个文件并放入 `DM_2026_Dataset/`。ZIP 保持原样，程序直接读取。[📦 课程数据入口](https://bhpan.buaa.edu.cn/link/AA29E06E1DF21C419D9A1F56FFB409B665)
+
+```text
+DM_2026_Dataset/
+├── Cluster.zip
+├── Image_Anomaly_Detection.zip
+├── weather.csv
+└── thyroid.zip
+```
+
+**3. 运行实验。**
 
 ```bash
 python run.py all
-python run.py cluster
-python run.py image
-python run.py weather
-python run.py thyroid
-python run.py cross-modal
 ```
 
-图像任务默认使用 torchvision 的 ResNet-50 IMAGENET1K_V2 官方权重，首次运行会下载。离线运行可通过 `--weights /path/to/resnet50-11ad3fa6.pth` 指定权重。若 PyTorch 位于独立环境，通过 `--vision-python /path/to/python` 指定其解释器。特征提取优先使用 CUDA，CPU 也可运行。特征缓存在 `.cache/`，实验结果写入 `outputs/`，可分别用 `--cache` 和 `--output` 更改。
+单独运行时，将 `all` 换成上表命令。用 `--data` 或 `--output` 指定输入或输出目录。
 
-## 实验与输出
+<details>
+<summary>⚙️ 图像权重、独立环境与缓存</summary>
 
-| 命令 | 方法与评估 | 主要产物 |
-| --- | --- | --- |
-| `cluster` | 多层图像特征，比较 K-means、Ward 和谱聚类。已知类别数为 6，类别标签用于事后计算 ARI、NMI 和匹配准确率。 | 聚类分配、列联表、指标、二维投影 |
-| `image` | 按类别比较正常图块近邻、使用训练异常样本的全局 SVM、局部与全局分数融合。 | 样本分数、预测、ROC/PR、图块分数叠图 |
-| `weather` | 用连续 12 个时刻的全部 21 项指标，预测下一时刻 CO₂。去重后剔除断档及含缺测的窗口，按目标时间作 70%/15%/15% 切分，训练区间拟合标准化，以验证 MAE 选模型。测试为逐步单步预测，历史输入使用截至预测时已观测的记录。 | 时间切分、持久性与回归模型对比、周期特征和损失函数对照、逐时浓度和变化量、残差 |
-| `thyroid` | 正常训练样本拟合稳健缩放与正常记忆、高斯混合、隔离森林；混合成分数由正常拟合样本的 BIC 决定。 | 样本分数、预测、ROC/PR、指标 |
-| `cross-modal` | 图像转换为局部描述符集合，表格行转换为单描述符集合。共用正常记忆、5 近邻距离、最高 5% 描述符距离聚合及分数校准。 | 原始距离与局部密度修正的逐域对照、等权宏平均、校准分数汇总 |
+首次提取图像特征时会下载 torchvision 官方 ResNet-50 IMAGENET1K_V2 权重，支持 CUDA 与 CPU。离线时使用 `--weights /path/to/resnet50-11ad3fa6.pth`，程序校验完整 SHA-256。若 PyTorch 装在另一环境，用 `--vision-python /path/to/python` 指定其解释器。特征缓存默认位于 `.cache/`，可用 `--cache` 改路径。
 
-天气的回归模型学习下一时刻相对最近一次观测的 CO₂ 变化量。周期特征将 12 个历史风向和预测时刻的日内相位编码为正余弦。平方损失下比较周期特征的影响，再用同一组周期特征比较平方损失与绝对损失。预测时刻由采样频率确定。
+</details>
 
-异常任务把正常训练样本分成拟合和校准两部分。分数越高越异常，经验尾部概率按 `(1 + 校准分数中大于等于当前分数的个数) / (校准样本数 + 1)` 计算。统一判定阈值为 `p_normal <= 0.05`。图像融合使用独立正常子集确定分量尺度。拓展一按域建库并分别校准，合并时用 `1 - p_normal` 排序。图像热图展示局部距离，定量评价采用样本级标签。
+<a id="layout"></a>
 
-密度修正将描述符的平均近邻距离除以局部参考半径的平方根。局部参考半径取这些近邻各自的留一近邻半径均值，以拟合库半径的第 10 百分位作下界。两种分数共用同一数据划分、近邻和聚合规则，各自使用正常校准集确定判定。
+## 🗂️ 仓库结构
 
-仓库地址见 [GitHub](https://github.com/floatingmist828-eng/sjwj)。
+```text
+.
+├── run.py               # 五项实验的统一入口
+├── requirements.txt     # 数值实验与绘图依赖
+├── dm2026/
+│   ├── vision.py        # 图像特征提取
+│   ├── cluster.py       # 图像聚类
+│   ├── anomaly.py       # 图像、甲状腺与跨模态异常检测
+│   ├── weather.py       # 数据清洗、滑窗与 CO₂ 回归
+│   ├── common.py        # 指标、曲线与结果导出
+│   └── provenance.py    # 数据和权重指纹
+└── assets/              # README 实验预览图
+```
+
+课程数据、报告、模型权重和完整运行产物保存在本地。
+
+<a id="outputs"></a>
+
+## 📁 结果文件
+
+| 默认目录 | 主要产物 |
+| :--- | :--- |
+| `outputs/cluster/` | 簇分配、列联表、聚类指标和共同 PCA 投影 |
+| `outputs/image/` | 逐类别样本分数、ROC / PR、混淆计数和局部异常热图 |
+| `outputs/weather/` | 测试预测、训练验证测试划分、周期特征消融和大幅变化子集指标 |
+| `outputs/thyroid/` | 样本级异常分数、ROC / PR、混淆计数和重复特征敏感性分析 |
+| `outputs/cross-modal/` | 逐域指标、三域等权宏平均和校准分数池化结果 |
+
+`outputs/run_all.json` 记录命令、软件版本及数据、权重和源码的 SHA-256。表中结果来自本仓库原始数据运行，软件版本差异可能影响末位数值及个别模型结果。

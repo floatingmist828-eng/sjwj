@@ -31,7 +31,7 @@ def run(archive, vision, folder):
     labels = read_labels(archive, "cluster_labels")
     y = np.array([labels[name] for name in ids])
     classes = np.unique(y)
-    coords = PCA(n_components=2).fit_transform(reduced)
+    coords = PCA(n_components=2, random_state=2026).fit_transform(reduced)
     frame = pd.DataFrame(dict(sample=ids, label=y, pc1=coords[:, 0], pc2=coords[:, 1]))
     fig, axes = plt.subplots(1, len(models), figsize=(14, 3.6), layout="constrained")
     metrics = []
