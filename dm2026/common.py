@@ -58,9 +58,6 @@ def binary_outputs(folder, frames, title):
     fig.suptitle(title)
     fig.savefig(folder / "curves.png", dpi=150)
     plt.close(fig)
-    pd.DataFrame(rows).to_csv(folder / "metrics.csv", index=False)
-
-
-def predictions(ids, labels, scores, cutoff, **extra):
-    return pd.DataFrame(dict(sample=ids, label=labels, score=scores,
-                             prediction=(scores >= cutoff).astype(int), **extra))
+    summary = pd.DataFrame(rows)
+    summary.to_csv(folder / "metrics.csv", index=False)
+    return summary

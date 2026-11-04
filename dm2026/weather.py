@@ -45,13 +45,13 @@ def summary_features(x):
     ], axis=1)
 
 
-def cyclical_features(history, dates, columns, training_rows, compact):
-    wind = np.deg2rad(history[:, :, columns.get_loc("wd (deg)")])
+def cyclical_features(wind, dates, train):
+    wind = np.deg2rad(wind)
     direction = np.stack([np.sin(wind), np.cos(wind)], axis=-1)
-    direction = direction.reshape(len(history), -1)
-    direction = StandardScaler().fit(direction[training_rows]).transform(direction)
+    direction = direction.reshape(len(wind), -1)
+    direction = StandardScaler().fit(direction[train]).transform(direction)
     phase = 2 * np.pi * (dates.hour.to_numpy() * 60 + dates.minute.to_numpy()) / 1440
-    return np.column_stack([compact, direction, np.sin(phase), np.cos(phase)])
+    return direction, np.column_stack([np.sin(phase), np.cos(phase)])
 
 
 def metrics(y, pred):
@@ -72,13 +72,18 @@ def run(source, folder):
     # Keep raw direction in the baseline; the new model uses its circular encoding.
     wind_column = data.columns.get_loc("wd (deg)")
     other_features = np.arange(compact.shape[1]) % history.shape[-1] != wind_column
-    cyclic = cyclical_features(history, dates, data.columns, train, compact[:, other_features])
+    direction, phase = cyclical_features(history[:, :, wind_column], dates, train)
+    wind = np.column_stack([compact[:, other_features], direction])
+    hour = np.column_stack([compact, phase])
+    cyclic = np.column_stack([wind, phase])
     ridge = Ridge(alpha=10).fit(flat[train], delta[train])
     predicted = {"persistence": baseline, "ridge_delta": baseline + ridge.predict(flat)}
     for name, features, loss in [
         ("boosted_delta", compact, "squared_error"),
         ("cyclic_boosted_delta", cyclic, "squared_error"),
         ("cyclic_median_delta", cyclic, "absolute_error"),
+        ("wind_only_delta", wind, "squared_error"),
+        ("hour_only_delta", hour, "squared_error"),
     ]:
         model = HistGradientBoostingRegressor(
             loss=loss, max_iter=220, learning_rate=0.055, max_leaf_nodes=23,
@@ -86,16 +91,31 @@ def run(source, folder):
             random_state=2026)
         model.fit(features[train], delta[train])
         predicted[name] = baseline + model.predict(features)
+    ablation = {name: predicted.pop(name) for name in ("wind_only_delta", "hour_only_delta")}
+    ablation.update({name: predicted[name] for name in ("boosted_delta", "cyclic_boosted_delta")})
     predicted["blend_delta"] = (predicted["ridge_delta"] + predicted["boosted_delta"]) / 2
-    rows = [
-        dict(split=split, model=name, **metrics(y[mask], pred[mask]))
-        for split, mask in [("validation", validation), ("test", test)]
+    validation_rows = [
+        dict(split="validation", model=name, **metrics(y[validation], pred[validation]))
         for name, pred in predicted.items()
     ]
-    best = min((row for row in rows if row["split"] == "validation"),
-               key=lambda row: row["mae"])["model"]
-    pd.DataFrame(rows).assign(selected=lambda frame: frame["model"] == best).to_csv(
-        folder / "metrics.csv", index=False)
+    best = min(validation_rows, key=lambda row: row["mae"])["model"]
+    test_rows = [dict(split="test", model=name, **metrics(y[test], pred[test]))
+                 for name, pred in predicted.items()]
+    pd.DataFrame(validation_rows + test_rows).assign(
+        selected=lambda frame: frame["model"] == best).to_csv(folder / "metrics.csv", index=False)
+    pd.DataFrame([
+        dict(split=split, model=name, **metrics(y[mask], pred[mask]))
+        for split, mask in [("validation", validation), ("test", test)]
+        for name, pred in ablation.items()
+    ]).to_csv(folder / "cyclic_ablation.csv", index=False)
+    change_cutoff = float(np.quantile(np.abs(delta[train]), 0.90))
+    rapid = np.abs(delta) > change_cutoff
+    pd.DataFrame([
+        dict(group=group, model=name, n=int(mask.sum()), **metrics(y[mask], pred[mask]))
+        for group, mask in [("routine", test & ~rapid), ("large_change", test & rapid)]
+        if mask.any()
+        for name, pred in predicted.items()
+    ]).to_csv(folder / "change_strata_metrics.csv", index=False)
     test_frame = pd.DataFrame(dict(date=dates[test], actual=y[test], last_co2=baseline[test], **{
         name: pred[test] for name, pred in predicted.items()
     }))
@@ -116,4 +136,5 @@ def run(source, folder):
     write_json(folder / "protocol.json", dict(
         **details, window=WINDOW, train_windows=int(train.sum()),
         validation_windows=int(validation.sum()), test_windows=int(test.sum()),
-        selected=best, selection_metric="validation MAE"))
+        selected=best, selection_metric="validation MAE",
+        large_change_cutoff_ppm=change_cutoff))

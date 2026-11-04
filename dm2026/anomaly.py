@@ -11,7 +11,7 @@ from sklearn.neighbors import NearestNeighbors
 from sklearn.preprocessing import RobustScaler
 from sklearn.svm import SVC
 
-from .common import binary_outputs, predictions, read_labels, write_json
+from .common import binary_metrics, binary_outputs, read_labels, write_json
 
 SEED = 2026
 ALPHA = 0.05
@@ -56,8 +56,8 @@ def conformal_p(calibration, scores):
 
 def calibrated_frame(ids, y, calibration, scores):
     p = conformal_p(calibration, scores)
-    return predictions(ids, y, scores, np.inf, p_normal=p).assign(
-        prediction=(p <= ALPHA).astype(int))
+    return pd.DataFrame(dict(sample=ids, label=y, score=scores,
+                             prediction=(p <= ALPHA).astype(int), p_normal=p))
 
 
 def shared_scores(normal, test, fit, cal):
@@ -94,6 +94,7 @@ def image_heatmaps(archive, folder, names, labels, distances, score):
 def image_runs(archive, vision, folder, specialized):
     names = np.array([name.split("/", 1)[1] for name in vision["names"]])
     patches, global_features = vision["patches"], vision["embeddings"]
+    labels = read_labels(archive, "image_anomaly_labels")
     results = {}
     for category in ("hazelnut", "zipper"):
         normal = np.flatnonzero(np.char.startswith(names, f"{category}/train/good/"))
@@ -101,7 +102,6 @@ def image_runs(archive, vision, folder, specialized):
         test = np.flatnonzero(np.char.startswith(names, f"{category}/test/"))
         fit, cal = normal_split(len(normal))
         memory, distances = shared_scores(patches[normal], patches[test], fit, cal)
-        labels = read_labels(archive, "image_anomaly_labels")
         ids = names[test]
         y = np.array([int(labels[name]["label"] == "bad") for name in ids])
         results[category] = {
@@ -143,14 +143,34 @@ def image_runs(archive, vision, folder, specialized):
     return results
 
 
+def thyroid_overlap(folder, training, evaluation, ids, y, frames):
+    train_keys = pd.MultiIndex.from_frame(training)
+    test_keys = pd.MultiIndex.from_frame(evaluation)
+    overlap = test_keys.isin(train_keys)
+    pd.DataFrame(dict(sample=ids, label=y, in_training=overlap)).to_csv(
+        folder / "feature_overlap.csv", index=False)
+    rows = []
+    for name, frame in frames.items():
+        subset = frame.loc[~overlap]
+        rows.append(dict(model=name, **binary_metrics(
+            subset["label"], subset["score"], subset["prediction"])))
+    pd.DataFrame(rows).to_csv(folder / "overlap_excluded_metrics.csv", index=False)
+    return dict(train_duplicates=int(train_keys.duplicated().sum()),
+                test_duplicates=int(test_keys.duplicated().sum()),
+                test_in_training=int(overlap.sum()),
+                positive_test_in_training=int(y[overlap].sum()))
+
+
 def thyroid_run(archive, folder, specialized):
     with ZipFile(archive) as source:
-        normal = pd.read_csv(source.open("thyroid/train-set.csv")).to_numpy()
+        training = pd.read_csv(source.open("thyroid/train-set.csv"))
         test_frame = pd.read_csv(source.open("thyroid/test-set.csv"))
+    evaluation = test_frame.drop(columns="label")[training.columns]
+    normal = training.to_numpy()
     fit, cal = normal_split(len(normal))
     scaler = RobustScaler().fit(normal[fit])
     normal = scaler.transform(normal)
-    test = scaler.transform(test_frame.drop(columns="label").to_numpy())
+    test = scaler.transform(evaluation.to_numpy())
     memory, _ = shared_scores(normal[:, None, :], test[:, None, :], fit, cal)
     y, ids = test_frame["label"].astype(int), test_frame.index + 1
     shared = {
@@ -162,26 +182,29 @@ def thyroid_run(archive, folder, specialized):
                                     random_state=SEED).fit(normal[fit]) for k in (1, 2, 4, 8)]
         model = min(mixtures, key=lambda mixture: mixture.bic(normal[fit]))
         forest = IsolationForest(n_estimators=300, random_state=SEED).fit(normal[fit])
-        binary_outputs(folder, {
+        frames = {
             "normal_memory": shared["shared_memory"],
             "density_memory": shared["density_memory"],
             "gaussian_mixture": calibrated_frame(ids, y, -model.score_samples(normal[cal]),
                                                  -model.score_samples(test)),
             "isolation_forest": calibrated_frame(ids, y, -forest.score_samples(normal[cal]),
                                                   -forest.score_samples(test)),
-        }, "Thyroid")
+        }
+        binary_outputs(folder, frames, "Thyroid")
+        overlap = thyroid_overlap(folder, training, evaluation, ids, y, frames)
         write_json(folder / "protocol.json", dict(
             normal_fit=len(fit), normal_calibration=len(cal), nominal_fpr=ALPHA,
             mixture_bic={str(m.n_components): m.bic(normal[fit]) for m in mixtures},
-            mixture_components=model.n_components))
+            mixture_components=model.n_components, feature_overlap=overlap))
     return shared
 
 
 def cross_modal(folder, domains):
+    summaries = []
     for domain, frames in domains.items():
         target = folder / domain
         target.mkdir(exist_ok=True)
-        binary_outputs(target, frames, domain)
+        summaries.append(binary_outputs(target, frames, domain).assign(domain=domain))
     pooled = {}
     for name, key in [("pooled_calibrated", "shared_memory"), ("pooled_density", "density_memory")]:
         frame = pd.concat([frames[key].assign(domain=domain) for domain, frames in domains.items()],
@@ -189,10 +212,7 @@ def cross_modal(folder, domains):
         pooled[name] = frame.rename(columns={"score": "raw_score"}).assign(
             score=1 - frame["p_normal"])
     binary_outputs(folder, pooled, "Cross-modal anomaly detection")
-    summary = pd.concat([
-        pd.read_csv(folder / domain / "metrics.csv").assign(domain=domain)
-        for domain in domains
-    ], ignore_index=True)
+    summary = pd.concat(summaries, ignore_index=True)
     summary.to_csv(folder / "domain_metrics.csv", index=False)
     macro = summary.groupby("model")[["auroc", "average_precision"]].mean()
     write_json(folder / "protocol.json", dict(

@@ -1,31 +1,35 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
+import json
+import platform
 from io import BytesIO
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from zipfile import ZipFile
 
 import numpy as np
 import torch
-from PIL import Image
+from PIL import Image, __version__ as pillow_version
 from torch.nn import functional as F
+from torchvision import __version__ as torchvision_version
 from torchvision.models import ResNet50_Weights, resnet50
+
+from .provenance import RESNET50_SHA256, verify_weights
 
 
 def extract(archive, output, weights_path):
     torch.set_num_threads(4)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     weights = ResNet50_Weights.IMAGENET1K_V2
-    if weights_path:
-        with weights_path.open("rb") as stream:
-            digest = hashlib.sha256(stream.read()).hexdigest()
-        if not digest.startswith("11ad3fa6"):
-            raise ValueError("Expected official ResNet-50 IMAGENET1K_V2 weights")
-        model = resnet50()
-        model.load_state_dict(torch.load(weights_path, map_location="cpu", weights_only=True))
-    else:
-        model = resnet50(weights=weights)
+    if weights_path is None:
+        weights_path = Path(torch.hub.get_dir()) / "checkpoints" / weights.url.rsplit("/", 1)[-1]
+        if not weights_path.exists():
+            weights_path.parent.mkdir(parents=True, exist_ok=True)
+            torch.hub.download_url_to_file(weights.url, str(weights_path), RESNET50_SHA256)
+    verify_weights(weights_path)
+    model = resnet50()
+    model.load_state_dict(torch.load(weights_path, map_location="cpu", weights_only=True))
     model = model.eval().to(device)
     transform = weights.transforms(resize_size=224, crop_size=224)
     # Fixed projection preserves distances without fitting on evaluation images.
@@ -62,13 +66,20 @@ def extract(archive, output, weights_path):
                 context = F.normalize(layer3, dim=1)
                 local = torch.cat([*blocks, context], dim=1).permute(0, 2, 3, 1)
                 patches.append((local @ projection).flatten(1, 2).cpu().numpy())
-    payload = dict(names=np.array(members), embeddings=np.concatenate(embeddings))
+    metadata = dict(
+        weights_sha256=RESNET50_SHA256, python=platform.python_version(),
+        torch=str(torch.__version__), torchvision=torchvision_version,
+        numpy=np.__version__, pillow=pillow_version, device=str(device), cuda=torch.version.cuda,
+        gpu=torch.cuda.get_device_name(device) if device.type == "cuda" else None)
+    payload = dict(names=np.array(members), embeddings=np.concatenate(embeddings),
+                   metadata=json.dumps(metadata))
     if patches:
         payload["patches"] = np.concatenate(patches)
     output.parent.mkdir(parents=True, exist_ok=True)
-    temporary = output.with_suffix(".tmp.npz")
-    np.savez(temporary, **payload)
-    temporary.replace(output)
+    with TemporaryDirectory(dir=output.parent) as work:
+        temporary = Path(work) / "features.npz"
+        np.savez(temporary, **payload)
+        temporary.replace(output)
 
 
 if __name__ == "__main__":

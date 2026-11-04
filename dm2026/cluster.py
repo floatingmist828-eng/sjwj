@@ -46,9 +46,13 @@ def run(archive, vision, folder):
         pd.DataFrame(table, index=classes).rename_axis("label").to_csv(
             folder / f"{name}_contingency.csv")
         frame[name] = labels_pred
-        frame[f"{name}_matched"] = [mapping[label] for label in labels_pred]
-        ax.scatter(*coords.T, c=labels_pred, cmap="tab10", s=8, alpha=0.75)
+        matched = np.array([mapping[label] for label in labels_pred])
+        frame[f"{name}_matched"] = matched
+        for category, marker in zip(classes, ("o", "s", "^", "D", "P", "X")):
+            ax.scatter(*coords[matched == category].T, marker=marker,
+                       label=category, s=10, alpha=0.75)
         ax.set(title=name, xlabel="PC1", ylabel="PC2")
+    fig.legend(*axes[0].get_legend_handles_labels(), ncol=len(classes), loc="outside lower center")
     fig.savefig(folder / "clusters.png", dpi=150)
     plt.close(fig)
     frame.to_csv(folder / "assignments.csv", index=False)
