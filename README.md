@@ -25,12 +25,29 @@
 | **④ 甲状腺无监督疾病判断** | `thyroid` | 仅用正常数据拟合稳健缩放、近邻记忆、高斯混合和隔离森林 | 隔离森林 AUROC **0.981**。原始正常记忆 AP **0.814** |
 | **✦ 拓展一 · 跨模态异常检测** | `cross-modal` | 图像与表格按域建正常样本库，共用 5 近邻评分、聚合及校准规则 | 密度修正三域等权宏 AUROC / AP **0.988 / 0.920** |
 
+类别标签只参与聚类评价。天气按目标时间作 70% / 15% / 15% 划分，以验证 MAE 选模。异常检测用独立正常样本校准阈值。
+
+### 📈 结果图
+
 <p align="center">
-  <img src="assets/cluster-preview.png" width="960" alt="六类图像在同一 PCA 投影上的四种聚类分配">
-  <br><sub>六类图像的共同 PCA 投影。颜色和形状使用评估阶段的簇匹配结果。</sub>
+  <img src="assets/clustering.svg" width="620" alt="六类图像在共同 PCA 平面上的聚类分布">
+  <br><sub><b>图 1</b> · PCA K-means 的 600 张图像。颜色和符号按评估时匹配的类别标注。</sub>
 </p>
 
-聚类类别只参与评价。天气按目标时间作 70% / 15% / 15% 划分，标准化只拟合训练数据，以验证 MAE 选模。异常检测以独立正常样本校准阈值，测试标签只用于评价。跨模态同时输出逐域、等权宏平均及池化结果。
+<p align="center">
+  <img src="assets/co2-forecast.svg" width="820" alt="测试集前 48 小时的 CO₂ 实测值与单步预测">
+  <br><sub><b>图 2</b> · 测试集前 48 小时的 CO₂ 单步预测。全测试集 MAE 为 1.854 ppm。</sub>
+</p>
+
+<p align="center">
+  <img src="assets/zipper-pr.svg" width="620" alt="拉链异常检测四种方法的精确率与召回率曲线">
+  <br><sub><b>图 3</b> · 拉链测试集的 PR 曲线（47 张，15 张异常）。图例括号内为 AP。</sub>
+</p>
+
+<p align="center">
+  <img src="assets/cross-modal-ap.svg" width="700" alt="正常记忆与密度修正在榛果、拉链及甲状腺测试集的 AP 对照">
+  <br><sub><b>图 4</b> · 密度修正提高了拉链 AP，降低了甲状腺 AP。宏平均对三个域等权。</sub>
+</p>
 
 <a id="quick-start"></a>
 
@@ -83,7 +100,8 @@ python run.py all
 │   ├── weather.py       # 数据清洗、滑窗与 CO₂ 回归
 │   ├── common.py        # 指标、曲线与结果导出
 │   └── provenance.py    # 数据和权重指纹
-└── assets/              # README 实验预览图
+├── scripts/plot_readme.py  # 从实验结果生成 README 图
+└── assets/                 # SVG 实验图
 ```
 
 课程数据、报告、模型权重和完整运行产物保存在本地。
@@ -100,4 +118,4 @@ python run.py all
 | `outputs/thyroid/` | 样本级异常分数、ROC / PR、混淆计数和重复特征敏感性分析 |
 | `outputs/cross-modal/` | 逐域指标、三域等权宏平均和校准分数池化结果 |
 
-`outputs/run_all.json` 记录命令、软件版本及数据、权重和源码的 SHA-256。表中结果来自本仓库原始数据运行，软件版本差异可能影响末位数值及个别模型结果。
+`outputs/run_all.json` 记录命令、软件版本及数据、权重和源码的 SHA-256。运行 `python scripts/plot_readme.py` 可重绘上面的图。
